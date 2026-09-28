@@ -1,0 +1,49 @@
+# ── 大文件（模型 / SDK / 工具链）─────────────────────
+# 句向量模型（477M）：可重新下载，不入库
+src-server/data/models/
+# Android 构建工具链（737M）：本地环境，不入库
+tools/platform-tools/
+tools/cmdline-tools/
+tools/android-sdk/
+tools/*.zip
+tools/*.tgz
+
+# ── 数据与产物 ──────────────────────────────────────
+# 知识库（含个人收藏数据）
+src-server/data/knowledge.db*
+src-server/data/backups/
+# 抖音原始数据（第三方内容，仅内部研究）
+src-server/data/videos.jsonl*
+src-server/data/failed.jsonl
+src-server/data/inbox.jsonl
+src-server/data/tmp/
+src-server/screenshots/
+src-server/notes/
+
+# ── 构建产物 ────────────────────────────────────────
+android-share/build/
+android-share/debug.keystore
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# ── 截图 / 临时 ─────────────────────────────────────
+tools/*.png
+tools/*.xml
+*.log
+.tmp/
+
+# ── 打包与评估产物 ──────────────────────────────────
+douyin-src.tgz
+src-server/data/backups/
+src-server/reports/audit/
+src-server/reports/daily-*.md
+
+# ── 敏感文件（不入库）───────────────────────────────
+src-server/.env
+**/_tls/
+*.pem
+*.key
+src-server/data/collections_*.json

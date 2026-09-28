@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">VideoMind Share</string>
+    <string name="a11y_desc">开启后，在抖音点「复制链接」即可自动收藏到你的知识库，无需再手动打开本应用。</string>
+</resources>

@@ -1,0 +1,25 @@
+# Structural Smoke Test Report
+
+Generated: 2026-05-24 16:34:26
+Pass: 11/11
+
+| Example | Status | Score | Mode | Evidence | Learning | Keyword misses |
+|---|---:|---:|---|---|---|---|
+| team-experts | pass | 11/11 | video-first+scene-verification+ocr-fallback | kf=48, verify=24, ocr=44, img=None | bullets=31 | - |
+| vibe-superpowers-plan | pass | 11/11 | video-first+scene-verification+ocr-fallback | kf=48, verify=24, ocr=208, img=None | bullets=41 | - |
+| desktop-automation | pass | 11/11 | image-post+vision-analysis | kf=1, verify=1, ocr=0, img=1 | bullets=37 | - |
+| diagonalization | pass | 11/11 | video-first+scene-verification+ocr-fallback | kf=300, verify=16, ocr=280, img=0 | bullets=51 | - |
+| find-yourself | pass | 11/11 | image-post+vision-analysis | kf=4, verify=4, ocr=0, img=4 | bullets=38 | 观点 |
+| claude-dev-pack | pass | 11/11 | video-first+scene-verification+ocr-fallback | kf=27, verify=12, ocr=24, img=0 | bullets=43 | - |
+| matlab-mcp-paper-figure | pass | 11/11 | video-first+scene-verification+ocr-fallback | kf=85, verify=12, ocr=36, img=0 | bullets=34 | - |
+| codegraph | pass | 11/11 | video-first+scene-verification+ocr-fallback | kf=38, verify=12, ocr=35, img=0 | bullets=19 | - |
+| openclaw-claude-code | pass | 11/11 | video-first+scene-verification+ocr-fallback | kf=300, verify=12, ocr=300, img=0 | bullets=41 | - |
+| skills-management | pass | 11/11 | video-first+scene-verification+ocr-fallback | kf=300, verify=12, ocr=188, img=0 | bullets=32 | - |
+| agent-to-harness | pass | 11/11 | image-post+vision-analysis | kf=1, verify=1, ocr=0, img=1 | bullets=32 | - |
+
+## Review Notes
+
+- `needs-review` means the record exists but at least one quality check failed.
+- This is a structural smoke test, not semantic grading.
+- Keyword checks are recall-oriented and are only meant to catch missing artifacts.
+- This report does not re-fetch Douyin; it evaluates current local artifacts.
