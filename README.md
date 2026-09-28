@@ -37,11 +37,13 @@
 **混合检索**：FTS5 关键词召回 + 句向量语义召回 → RRF 名次融合。
 实测语义改写有效：搜「程序员工具」→ 命中 Harness 视频（纯 FTS 为 0 命中）。
 
-### Android（`android-share/`）— 手动版可用
+### Android（`android-share/`）— 一键采集已实机验证
 
 手工编译的 APK（aapt2/d8/apksigner，无 Gradle）：
 - `ShareReceiverActivity` — 打开即读剪贴板 → 提取短链 → POST API
-- `ClipCaptureActivity` + `UploadService` + `VideoMindAccessibilityService` — 无障碍自动版（**未成功**，见下）
+- `VideoMindAccessibilityService` — 抖音内「存入知识库」悬浮按钮：自动打开分享、点击分享链接、短暂取得窗口焦点、读取本次新复制链接，交给 `UploadService` 入队；随后关闭复制成功面板。
+- 仅用户点击触发，不再后台轮询剪贴板；HTTP 202 表示入队，尚不代表视频已解析。
+- Windows 构建：`pwsh -NoProfile -File android-share/build.ps1`，输出到带时间戳的 `android-share/build/native-*/`，不清除旧构建。
 
 ### 其他
 
@@ -66,11 +68,14 @@ adb reverse tcp:8000 tcp:8000    # 手机 127.0.0.1:8000 → PC
 **抖音分享面板走自带实现，不经过 Android 系统 Sharesheet**（logcat 实证：`openSharePanel`，
 全程零 `ResolverActivity`）。因此：
 
-- ❌ 注册 `ACTION_SEND` 的 App 在抖音里永远不会被唤起
-- ✅ 唯一可行路径：**剪贴板**（用户点「分享链接」复制短链）
+- 当前实测分享入口没有进入系统 Sharesheet，不能依赖 `ACTION_SEND` 出现在其中；不外推到所有版本和入口。
+- 已验证路径：无障碍定位「分享」及「分享链接」，通过取得焦点的悬浮窗口读取剪贴板。
 
-**无障碍自动收藏失败**：Android 10+ 限制后台应用读剪贴板，无障碍服务虽能调用 API 但拿不到真实内容。
-透明 Activity 抢焦点方案未完成验证。
+**2026-09-29 实机更新**：Android 16、抖音 39.8.0，已有无障碍授权的手机上，两个项目已有视频共三次点击均收到 HTTP 202；数据库新增三条 capture/job，状态为 queued。两个样本短链重定向分别核对到 `7637313450288401716`、`7601100018069589289`。
+
+关键是 `TYPE_ACCESSIBILITY_OVERLAY` 在复制后暂时移除 `FLAG_NOT_FOCUSABLE`，等 `hasWindowFocus()` 后读取，并核对剪贴板时间戳。此次分享面板节点可读，和早先实验条件不同。不是依靠后台读板，也未给 App 额外的后台剪贴板特权。
+
+**尚未闭环**：两条链接调用现有 SSR 解析器都复现 `videoInfoRes.item_list 为空`；第二个样本的「保存本地」呈禁用状态。没有运行 mock 来冒充真实解析。手机目前仍依赖 USB 的 `adb reverse` 访问电脑 API；断线重试、脱离电脑、更多抖音布局尚未验收。该按钮负责收藏到 VideoMind，不更改抖音自己的星标收藏。
 
 ## 目录
 
@@ -87,7 +92,8 @@ adb reverse tcp:8000 tcp:8000    # 手机 127.0.0.1:8000 → PC
 
 - ✅ 后端框架 + 混合检索 + 展示页：完成，端到端验证通过
 - ✅ 手机手动收藏：完成（打开 App 一键上传）
-- ❌ 手机自动收藏（无障碍）：失败，未解决
+- ✅ 手机一键采集（无障碍悬浮按钮）：两个视频实机通过，真实入队
+- ⏳ 新视频内容获取与自动解析入库：SSR 失败仍待解决，入队不等于解析完成
 - ⏳ Stage 3 接真分析器：等 Hermes GPU 空出
 - ⏳ Stage 6 四实验 / Stage 7 Qwen-Agent 检索：待做
 

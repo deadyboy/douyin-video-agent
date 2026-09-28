@@ -48,7 +48,7 @@ public class UploadService extends Service {
                     os.write(body.getBytes(StandardCharsets.UTF_8));
                 }
                 int code = c.getResponseCode();
-                msg = (code == 202 || code == 200) ? "✓ 已收藏到 VideoMind" : "收藏失败 HTTP " + code;
+                msg = (code == 202 || code == 200) ? "✓ 链接已入队，等待解析" : "收藏失败 HTTP " + code;
                 Log.i(TAG, "上传结果 code=" + code);
             } catch (Exception e) {
                 msg = "收藏失败：" + e.getClass().getSimpleName();
