@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     video_id    TEXT,
     status      TEXT NOT NULL DEFAULT 'queued',  -- queued/running/succeeded/failed
     attempts    INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at REAL NOT NULL DEFAULT 0,
     error       TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     started_at  TEXT,
@@ -123,6 +124,9 @@ def _migrate(conn) -> None:
     for name, ddl in (("short_url", "TEXT"), ("statistics", "TEXT"), ("hashtags", "TEXT")):
         if name not in cols:
             conn.execute(f"ALTER TABLE videos ADD COLUMN {name} {ddl}")
+    job_cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+    if "next_attempt_at" not in job_cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN next_attempt_at REAL NOT NULL DEFAULT 0")
     conn.commit()
 
 
@@ -281,21 +285,25 @@ def enqueue_job(conn, *, capture_id=None, video_id=None) -> dict:
 
 
 def claim_next_job(conn) -> dict | None:
-    """原子认领一个 queued job（BEGIN IMMEDIATE 防并发重复认领）。"""
+    """Atomically claim only jobs whose retry delay has elapsed."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(
-            "SELECT * FROM jobs WHERE status='queued' ORDER BY created_at LIMIT 1"
+            "SELECT * FROM jobs WHERE status='queued' AND next_attempt_at <= ? "
+            "ORDER BY next_attempt_at, created_at LIMIT 1",
+            (time.time(),),
         ).fetchone()
-        if not row:
-            conn.execute("ROLLBACK")
+        if row is None:
+            conn.rollback()
             return None
         conn.execute(
-            "UPDATE jobs SET status='running', attempts=attempts+1, started_at=? WHERE id=?",
+            "UPDATE jobs SET status='running', attempts=attempts+1, "
+            "started_at=?, finished_at=NULL WHERE id=?",
             (_ts(), row["id"]),
         )
+        claimed = conn.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone()
         conn.commit()
-        return dict(row)
+        return dict(claimed)
     except Exception:
         conn.rollback()
         raise
@@ -303,32 +311,48 @@ def claim_next_job(conn) -> dict | None:
 
 # ── FTS5 检索 ────────────────────────────────────────
 
-def rebuild_fts(conn) -> None:
-    """重建 FTS 索引（从四表同步当前内容）。"""
-    conn.execute("DELETE FROM knowledge_fts")
-    rows = conn.execute(
+def update_fts_for_video(conn, video_id: str, *, commit: bool = True) -> None:
+    """Index one video exactly once, aggregating notes from all captures."""
+    row = conn.execute(
         """
         SELECT v.video_id, v.title, v.description,
-               COALESCE(c.user_note, '') AS user_note,
+               COALESCE((
+                   SELECT group_concat(note, char(10))
+                   FROM (
+                       SELECT TRIM(c.user_note) AS note
+                       FROM captures c
+                       WHERE c.video_id = v.video_id
+                         AND TRIM(COALESCE(c.user_note, '')) <> ''
+                       ORDER BY c.created_at, c.id
+                   )
+               ), '') AS user_note,
                COALESCE(a.summary, '') AS summary,
                COALESCE(a.learning_points, '') AS learning_points,
                COALESCE(a.visual_summary, '') AS visual_summary,
                COALESCE(a.ocr_text, '') AS ocr_text
-        FROM videos v
-        LEFT JOIN analysis a ON a.video_id = v.video_id
-        LEFT JOIN captures c ON c.video_id = v.video_id
-        """
-    ).fetchall()
-    for r in rows:
+        FROM videos v LEFT JOIN analysis a ON a.video_id = v.video_id
+        WHERE v.video_id = ?
+        """,
+        (video_id,),
+    ).fetchone()
+    conn.execute("DELETE FROM knowledge_fts WHERE video_id=?", (video_id,))
+    if row is not None:
         conn.execute(
-            "INSERT INTO knowledge_fts (video_id, title, description, user_note, summary, "
-            "learning_points, visual_summary, ocr_text) VALUES (?,?,?,?,?,?,?,?)",
-            (
-                r["video_id"], r["title"] or "", r["description"] or "",
-                r["user_note"] or "", r["summary"] or "", r["learning_points"] or "",
-                r["visual_summary"] or "", r["ocr_text"] or "",
-            ),
+            "INSERT INTO knowledge_fts (video_id,title,description,user_note,summary,"
+            "learning_points,visual_summary,ocr_text) VALUES (?,?,?,?,?,?,?,?)",
+            (row["video_id"], row["title"] or "", row["description"] or "",
+             row["user_note"] or "", row["summary"] or "", row["learning_points"] or "",
+             row["visual_summary"] or "", row["ocr_text"] or ""),
         )
+    if commit:
+        conn.commit()
+
+
+def rebuild_fts(conn) -> None:
+    """Full maintenance rebuild; normal ingestion uses per-video updates."""
+    conn.execute("DELETE FROM knowledge_fts")
+    for row in conn.execute("SELECT video_id FROM videos"):
+        update_fts_for_video(conn, row["video_id"], commit=False)
     conn.commit()
 
 
