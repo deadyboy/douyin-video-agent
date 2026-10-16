@@ -400,3 +400,38 @@ def _main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_main(sys.argv[1:]))
+
+
+def index_video(conn, video_id: str) -> dict:
+    """Upsert a single changed video embedding without rebuilding the entire index.
+
+    If the local model is unavailable, preserve FTS search and report the reason.
+    """
+    import hashlib
+    if not _load():
+        return {"available": False, "indexed": False, "error": _load_error}
+    from core import _fields_for_ids
+    fields = _fields_for_ids(conn, [video_id]).get(video_id)
+    if not fields:
+        return {"available": True, "indexed": False, "reason": "missing_video"}
+    text = compose_text(fields) or fields.get("title") or video_id
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+    _ensure_table(conn)
+    old = conn.execute(
+        "SELECT text_hash,model FROM embeddings WHERE video_id=?", (video_id,)
+    ).fetchone()
+    if old and old["text_hash"] == digest and old["model"] == _MODEL_NAME:
+        return {"available": True, "indexed": False, "reason": "unchanged"}
+    vec = embed_text(text)
+    if vec is None:
+        return {"available": False, "indexed": False, "error": _load_error}
+    conn.execute(
+        "INSERT INTO embeddings (video_id,vector,dim,model,text_hash,updated_at) "
+        "VALUES (?,?,?,?,?,datetime('now')) "
+        "ON CONFLICT(video_id) DO UPDATE SET vector=excluded.vector, "
+        "dim=excluded.dim,model=excluded.model,text_hash=excluded.text_hash,"
+        "updated_at=excluded.updated_at",
+        (video_id, vector_to_blob(vec), len(vec), _MODEL_NAME, digest),
+    )
+    conn.commit()
+    return {"available": True, "indexed": True, "dim": len(vec)}
