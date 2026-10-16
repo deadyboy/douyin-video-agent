@@ -21,8 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from core import (
     connect, claim_next_job, enqueue_job,
     upsert_video, update_video_status,
-    add_capture, get_analysis, upsert_analysis,
-    rebuild_fts, _ts,
+    add_capture, get_analysis, upsert_analysis, resolve_video_id,
+    update_fts_for_video, _ts,
 )
 from analyze_adapters import get_analyzer
 
@@ -47,6 +47,30 @@ def process_one(conn, analyzer):
             ("no url", _ts(), job["id"]),
         )
         conn.commit()
+        return True
+
+    # Resolve locally when possible; reuse a previously resolved raw link.
+    # Avoid a second expensive VLM call for an already analyzed video.
+    existing_id = job.get("video_id") or capture.get("video_id")
+    if not existing_id:
+        existing_id = resolve_video_id(short_url, short_url)
+    if not existing_id:
+        previous = conn.execute(
+            "SELECT video_id FROM captures WHERE raw_url=? AND video_id IS NOT NULL "
+            "ORDER BY created_at DESC LIMIT 1", (short_url,)
+        ).fetchone()
+        existing_id = previous["video_id"] if previous else None
+    if existing_id and get_analysis(conn, existing_id) is not None:
+        conn.execute(
+            "UPDATE captures SET video_id=? WHERE id=?", (existing_id, capture["id"])
+        )
+        conn.execute(
+            "UPDATE jobs SET video_id=?, status='succeeded', finished_at=?, error=NULL WHERE id=?",
+            (existing_id, _ts(), job["id"]),
+        )
+        conn.commit()
+        update_fts_for_video(conn, existing_id)
+        print(f"[worker] skipped existing analysis video_id={existing_id}")
         return True
 
     print(f"[worker] processing job={job['id']} url={short_url}")
@@ -89,21 +113,30 @@ def process_one(conn, analyzer):
             (_ts(), job["id"]),
         )
         conn.commit()
-        rebuild_fts(conn)
+        update_fts_for_video(conn, video_id)
+        # Semantic recall must include newly ingested items. Model absence is non-fatal.
+        try:
+            import embeddings
+            embeddings.index_video(conn, video_id)
+        except Exception as embed_error:
+            print(f"[worker] embedding unavailable: {embed_error}")
         print(f"[worker] ✓ job={job['id']} → video_id={video_id}")
         return True
 
     except Exception as e:
-        attempts = job.get("attempts", 0) + 1
+        # claim_next_job already incremented the attempt counter.
+        attempts = int(job.get("attempts") or 1)
+        terminal = attempts >= MAX_ATTEMPTS
+        delay = 0 if terminal else min(3600, RETRY_BACKOFF_SEC * (2 ** (attempts - 1)))
         conn.execute(
             "UPDATE jobs SET attempts=?, error=?, finished_at=?, "
-            "status=CASE WHEN ? >= ? THEN 'failed' ELSE 'queued' END "
-            "WHERE id=?",
-            (attempts, str(e), _ts(),
-             attempts, MAX_ATTEMPTS, job["id"]),
+            "status=?, next_attempt_at=? WHERE id=?",
+            (attempts, str(e), _ts(), "failed" if terminal else "queued",
+             0 if terminal else time.time() + delay, job["id"]),
         )
         conn.commit()
-        print(f"[worker] ✗ job={job['id']} attempts={attempts} err={e}")
+        print(f"[worker] ✗ job={job['id']} attempts={attempts} "
+              f"retry_in={delay}s err={e}")
         return True
 
 
