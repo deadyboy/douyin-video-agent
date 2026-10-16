@@ -1,0 +1,11 @@
+{
+  "name": "videomind-douyin-media-bridge",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Isolated provider bridge to upstream MIT-licensed dy-downloader",
+  "dependencies": {
+    "dy-downloader": "0.2.3",
+    "polydl": "0.5.3"
+  }
+}
