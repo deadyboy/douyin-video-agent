@@ -276,12 +276,18 @@ def analyze_frame_verification(
     video_summary: str,
     actual_duration: float = 0,
     max_frames: int = _FRAME_VERIFY_MAX,
+    frame_timestamps_ms: list[int] | None = None,
 ) -> str:
     """用 scene-change 帧复核 video-first 结论，并补充遗漏细节。"""
     if not frame_paths:
         return "（无 scene-change 关键帧可用于复核）"
 
     sampled = _sample_paths(frame_paths, max_frames)
+    time_by_path = (
+        dict(zip(frame_paths, frame_timestamps_ms))
+        if frame_timestamps_ms and len(frame_timestamps_ms) == len(frame_paths)
+        else {}
+    )
     chunks = [
         sampled[i:i + max(1, _FRAME_VERIFY_CHUNK)]
         for i in range(0, len(sampled), max(1, _FRAME_VERIFY_CHUNK))
@@ -313,9 +319,11 @@ def analyze_frame_verification(
             if not b64:
                 continue
             absolute_index = (chunk_index - 1) * max(1, _FRAME_VERIFY_CHUNK) + i
-            approx_time = ""
-            if actual_duration > 0 and len(sampled) > 0:
-                approx_time = f"（约 {actual_duration * (absolute_index - 1) / max(len(sampled), 1):.1f}s）"
+            # Never synthesize timestamps from irregularly spaced scene frames.
+            approx_time = (
+                f"（{time_by_path[path] / 1000:.2f}s）"
+                if path in time_by_path else ""
+            )
             content.append({"type": "text", "text": f"关键帧 {absolute_index}/{len(sampled)} {approx_time}"})
             content.append({"type": "image_url", "image_url": {"url": b64}})
 
@@ -349,16 +357,16 @@ class KeyframeAnalysis:
 
 
 def analyze_single_frame(frame_path: str, index: int = 0,
-                         total_frames: int = 1, actual_duration: float = 0) -> KeyframeAnalysis:
+                         total_frames: int = 1, actual_duration: float = 0,
+                         timestamp_ms: int | None = None) -> KeyframeAnalysis:
     """分析单张关键帧。"""
     b64 = _encode_image(frame_path)
     if not b64:
         return KeyframeAnalysis(path=frame_path, index=index, summary="[图片过大/编码失败]")
     
-    frame_count_hint = ""
-    if actual_duration > 0 and total_frames > 0:
-        approx_time = (actual_duration / max(total_frames, 1)) * index
-        frame_count_hint = f"这是第 {index+1}/{total_frames} 张关键帧（约 {approx_time:.0f}秒处）。"
+    frame_count_hint = f"这是第 {index+1}/{total_frames} 张关键帧。"
+    if timestamp_ms is not None:
+        frame_count_hint += f"准确的抽帧时间戳：{timestamp_ms / 1000:.2f} 秒。"
 
     prompt = (
         f"请用 1-2 句中文描述这张视频帧的画面内容。{frame_count_hint}\n"
@@ -378,11 +386,15 @@ def analyze_single_frame(frame_path: str, index: int = 0,
     if not reply:
         reply = "[视觉模型调用失败]"
     
-    return KeyframeAnalysis(path=frame_path, index=index, summary=reply.strip())
+    return KeyframeAnalysis(
+        path=frame_path, index=index, summary=reply.strip(),
+        timestamp_approx=(f"{timestamp_ms / 1000:.2f}s" if timestamp_ms is not None else ""),
+    )
 
 
 def analyze_keyframes(frame_paths: list, max_frames: int = 12,
-                      actual_duration: float = 0) -> list[KeyframeAnalysis]:
+                      actual_duration: float = 0,
+                      frame_timestamps_ms: list[int] | None = None) -> list[KeyframeAnalysis]:
     """
     批量分析关键帧。
     
@@ -404,10 +416,16 @@ def analyze_keyframes(frame_paths: list, max_frames: int = 12,
         step = total / max_frames
         sampled = [frame_paths[int(i * step)] for i in range(max_frames)]
     
+    time_by_path = (
+        dict(zip(frame_paths, frame_timestamps_ms))
+        if frame_timestamps_ms and len(frame_timestamps_ms) == len(frame_paths)
+        else {}
+    )
     results = []
     for i, fp in enumerate(sampled):
         ka = analyze_single_frame(fp, index=i, total_frames=len(sampled),
-                                  actual_duration=actual_duration)
+                                  actual_duration=actual_duration,
+                                  timestamp_ms=time_by_path.get(fp))
         results.append(ka)
     
     return results
@@ -421,7 +439,8 @@ def compose_scene_summary(analyses: list[KeyframeAnalysis]) -> str:
     lines = []
     for a in analyses:
         if a.summary and a.summary != "[视觉模型调用失败]" and a.summary != "[图片过大/编码失败]":
-            lines.append(f"- 帧{a.index+1}: {a.summary}")
+            stamp = f" ({a.timestamp_approx})" if a.timestamp_approx else ""
+            lines.append(f"- 帧{a.index+1}{stamp}: {a.summary}")
     
     if not lines:
         return "（所有关键帧分析失败）"
