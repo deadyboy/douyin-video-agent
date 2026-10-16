@@ -76,16 +76,21 @@ def analyze_real(short_url: str) -> dict:
         }
 
     result = analyze_video(short_url)
+    meta = result.get("meta") or {}
+    if not isinstance(meta, dict):
+        from dataclasses import asdict, is_dataclass
+        meta = asdict(meta) if is_dataclass(meta) else {}
 
-    ok = result.get("status") in ("completed", "partial")
+    # 'partial' can mean no usable media; never report that as completed analysis.
+    ok = result.get("status") == "completed"
     return {
         "ok": ok,
         "source": "real",
         "video_id": result.get("video_id"),
-        "title": (result.get("meta") or {}).get("title"),
-        "description": (result.get("meta") or {}).get("description"),
-        "canonical_url": (result.get("meta") or {}).get("raw_url"),
-        "duration_ms": (result.get("meta") or {}).get("duration_ms"),
+        "title": meta.get("title"),
+        "description": meta.get("description"),
+        "canonical_url": meta.get("raw_url"),
+        "duration_ms": meta.get("duration_ms"),
         "media_type": "image_post" if str(result.get("analysis_mode", "")).startswith("image-post") else "video",
         "summary": result.get("vertical_summary") or result.get("visual_summary"),
         "learning_points": result.get("learning_points"),
