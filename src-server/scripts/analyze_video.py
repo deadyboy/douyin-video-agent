@@ -124,15 +124,36 @@ def analyze_video(short_url: str, tags: list[str] | None = None) -> dict:
     }
     
     # ═══════════════════════════════════════════════════════
-    # Phase 1: SSR 元数据提取
+    # Phase 1: pluggable media acquisition. dy-downloader is an optional
+    # independent provider; the original SSR remains available for comparison.
     # ═══════════════════════════════════════════════════════
-    try:
-        meta = parse_short_url(short_url)
-    except Exception as e:
-        result["status"] = "failed"
-        result["error"] = f"SSR 解析失败: {e}"
-        _record_failed(short_url, str(e))
-        return result
+    provider = os.environ.get("DOUYIN_MEDIA_PROVIDER", "ssr").strip().lower()
+    acquired_media = None
+    if provider in ("dy", "auto"):
+        try:
+            from lib.media_providers import acquire_media
+            acquired_media = acquire_media(short_url)
+        except Exception as e:
+            # Do not leak cookies, signed CDN URLs or raw third-party errors.
+            code = getattr(e, "code", type(e).__name__)
+            result["errors"].append(f"dy-downloader acquisition: {code}")
+            if provider == "dy":
+                result["status"] = "failed"
+                result["error"] = f"媒体获取失败: {code}"
+                _record_failed(short_url, result["error"])
+                return result
+    if acquired_media:
+        meta = acquired_media.meta
+        result["media_provider"] = "dy-downloader"
+    else:
+        try:
+            meta = parse_short_url(short_url)
+            result["media_provider"] = "ssr"
+        except Exception as e:
+            result["status"] = "failed"
+            result["error"] = f"SSR 解析失败: {type(e).__name__}"
+            _record_failed(short_url, result["error"])
+            return result
     
     video_id = meta.video_id
     duration_sec = meta.duration_ms / 1000 if meta.duration_ms else 0
@@ -149,9 +170,13 @@ def analyze_video(short_url: str, tags: list[str] | None = None) -> dict:
     video_usage = {}
     video_first_ok = False
     local_video_path = None
-    if meta.play_addr:
+    if meta.play_addr or (acquired_media and acquired_media.local_video_path):
         try:
-            local_video_path = download_video_artifact(meta.play_addr, video_id=video_id)
+            local_video_path = (
+                acquired_media.local_video_path
+                if acquired_media and acquired_media.local_video_path
+                else download_video_artifact(meta.play_addr, video_id=video_id)
+            )
             if local_video_path:
                 if VISION_ENABLED:
                     video_analysis = analyze_video_file(
@@ -218,6 +243,7 @@ def analyze_video(short_url: str, tags: list[str] | None = None) -> dict:
                         else min(frame_result.duration_sec, float(os.environ.get("DOUYIN_MAX_ANALYZE_SECONDS", "600")))
                     ),
                     max_frames=frame_verify_max,
+                    frame_timestamps_ms=frame_result.frame_timestamps_ms,
                 )
                 scene_summary = (
                     "## Video-first 时间轴主分析\n\n"
@@ -230,6 +256,7 @@ def analyze_video(short_url: str, tags: list[str] | None = None) -> dict:
                 analyses = analyze_keyframes(
                     frame_result.keyframe_paths,
                     max_frames=max_kf_analyze,
+                    frame_timestamps_ms=frame_result.frame_timestamps_ms,
                     actual_duration=(
                         frame_result.duration_sec
                         if not frame_result.duration_truncated
@@ -244,8 +271,24 @@ def analyze_video(short_url: str, tags: list[str] | None = None) -> dict:
         scene_summary = video_summary or "（未提取到关键帧，可能 play_addr 不可用或视频无法访问）"
 
     image_evidence_paths = []
-    if keyframe_count == 0 and meta.image_urls and VISION_ENABLED:
-        image_evidence_paths = _download_image_evidence(meta.image_urls, video_id)
+    if keyframe_count == 0 and VISION_ENABLED and (
+        meta.image_urls or (acquired_media and acquired_media.local_image_paths)
+    ):
+        if acquired_media and acquired_media.local_image_paths:
+            import shutil
+            images_dest = _SCREENSHOTS_DIR / video_id / "images"
+            images_dest.mkdir(parents=True, exist_ok=True)
+            image_evidence_paths = []
+            for i, filename in enumerate(acquired_media.local_image_paths[:20], 1):
+                src = Path(filename)
+                suffix = src.suffix.lower()
+                if suffix not in (".jpg", ".jpeg", ".webp", ".png"):
+                    continue
+                dst = images_dest / f"image_{i:04d}{suffix}"
+                shutil.copyfile(src, dst)
+                image_evidence_paths.append(str(dst))
+        else:
+            image_evidence_paths = _download_image_evidence(meta.image_urls, video_id)
         if image_evidence_paths:
             keyframe_count = len(image_evidence_paths)
             frame_verified_count = len(image_evidence_paths)
@@ -380,6 +423,17 @@ def analyze_video(short_url: str, tags: list[str] | None = None) -> dict:
     result["image_evidence_count"] = len(image_evidence_paths)
     result["play_addr_present"] = bool(meta.play_addr)
     result["completed_at"] = _timestamp()
+    # Real knowledge worker consumes this return value rather than parsing
+    # historical JSONL records. Preserve its structured analysis fields.
+    result["visual_summary"] = scene_summary
+    result["vertical_summary"] = resolved_evidence.get("resolved_summary", "")
+    result["ocr_text"] = subtitle_text
+    result["learning_points"] = learning_points
+    result["human_summary"] = human_note
+    result["frame_verification"] = frame_verification
+    result["resolved_evidence"] = resolved_evidence
+    result["analysis_mode"] = analysis_mode
+    result["quality_score"] = resolved_evidence.get("quality_score")
     
     return result
 
