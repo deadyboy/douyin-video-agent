@@ -72,6 +72,8 @@ class FrameExtractionResult:
     keyframe_paths: list = field(default_factory=list)
     ocr_paths: list = field(default_factory=list)
     local_video_path: str = ""
+    frame_manifest_path: str = ""
+    frame_timestamps_ms: list = field(default_factory=list)
 
 
 # ── 下载视频 ──────────────────────────────────────────
@@ -240,6 +242,25 @@ def extract_frames_from_local(
     strategy = FrameStrategy.for_duration(actual_duration)
     effective_duration = min(actual_duration, strategy.max_duration)
     result.duration_truncated = (actual_duration > strategy.max_duration)
+
+    # Experimental: budgeted, timestamp-aware scout sampler. Keep legacy path
+    # available for A/B testing and for reproducibility of earlier analyses.
+    if os.environ.get("DOUYIN_SAMPLER_MODE", "legacy").lower() == "adaptive":
+        from .adaptive_sampling import extract_adaptive_frames
+        manifest = extract_adaptive_frames(
+            local_path, keyframe_dir,
+            duration_sec=effective_duration,
+            budget=int(os.environ.get("DOUYIN_ADAPTIVE_BUDGET", "8")),
+            probe_fps=float(os.environ.get("DOUYIN_ADAPTIVE_PROBE_FPS", "1")),
+        )
+        result.keyframe_paths = [f["path"] for f in manifest["frames"]]
+        result.keyframe_count = len(result.keyframe_paths)
+        result.frame_timestamps_ms = [f["timestamp_ms"] for f in manifest["frames"]]
+        result.frame_manifest_path = str(Path(keyframe_dir) / "frame_manifest.json")
+        result.ocr_paths = _extract_ocr_frames(
+            local_path, ocr_dir, strategy.ocr_fps, effective_duration)
+        result.ocr_count = len(result.ocr_paths)
+        return result
 
     result.ocr_paths = _extract_ocr_frames(local_path, ocr_dir, strategy.ocr_fps, effective_duration)
     result.ocr_count = len(result.ocr_paths)
